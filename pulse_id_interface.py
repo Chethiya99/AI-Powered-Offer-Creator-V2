@@ -3,8 +3,8 @@ import openai
 import json
 import re
 from datetime import datetime, timedelta
-import speech_recognition as sr
 from audio_recorder_streamlit import audio_recorder
+import base64
 
 # Initialize session state
 if 'offer_params' not in st.session_state:
@@ -15,19 +15,29 @@ if 'adjusted_params' not in st.session_state:
     st.session_state.adjusted_params = None
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
+if 'transcribed_text' not in st.session_state:
+    st.session_state.transcribed_text = ""
 
 # Helper function for consistent dollar formatting
 def format_currency(amount):
     return f"\\${amount}"  # Escaped for Markdown
 
-# Function to transcribe audio
-def transcribe_audio(audio_bytes):
+# Function to transcribe audio using OpenAI Whisper
+def transcribe_audio_with_whisper(audio_bytes, api_key):
     try:
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(audio_bytes) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data)
-            return text
+        client = openai.OpenAI(api_key=api_key)
+        
+        # Save audio to a temporary file
+        audio_file = "temp_audio.wav"
+        with open(audio_file, "wb") as f:
+            f.write(audio_bytes)
+        
+        with open(audio_file, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+            return transcription.text
     except Exception as e:
         st.error(f"Error transcribing audio: {str(e)}")
         return None
@@ -45,40 +55,36 @@ if not openai_api_key:
     st.stop()
 
 # Voice input section
-st.subheader("🎤 Voice Input")
-audio_bytes = audio_recorder("Click to speak your offer:", pause_threshold=2.0)
+st.subheader("🎤 Speak Your Offer")
+audio_bytes = audio_recorder("Click to record your offer (2+ seconds):", pause_threshold=2.0)
 
 if audio_bytes:
     st.session_state.audio_bytes = audio_bytes
     st.audio(audio_bytes, format="audio/wav")
     
-    if st.button("Transcribe Audio"):
+    if st.button("Transcribe with OpenAI Whisper"):
         with st.spinner("Transcribing your voice..."):
-            transcription = transcribe_audio(audio_bytes)
+            transcription = transcribe_audio_with_whisper(audio_bytes, openai_api_key)
             if transcription:
                 st.session_state.transcribed_text = transcription
-                st.success("Transcription successful!")
-                st.text_area("Transcribed Text:", value=transcription, height=100, key="transcription_display")
+                st.success("Transcription complete! Edit the text below if needed.")
 
-# Text input section with better examples
-st.subheader("✏️ Text Input")
+# Text input section that shows transcription or allows manual input
+st.subheader("✏️ Offer Description")
 user_prompt = st.text_area(
-    "Or type your offer description here (e.g., 'Give \\$20 cashback for first 10 customers spending \\$500+ in 7 days'):",
+    "Your offer description:",
     height=100,
-    help="Use dollar signs normally - we'll handle the formatting automatically",
-    key="text_input",
-    value=st.session_state.get("transcribed_text", "")
+    value=st.session_state.transcribed_text,
+    key="offer_description",
+    help="Edit this text if needed, or type your offer directly"
 )
-
-# Use whichever input is available (voice transcription takes precedence)
-final_prompt = st.session_state.get("transcribed_text", user_prompt)
 
 # Enhanced extraction function
 def extract_offer_parameters(prompt, api_key):
     try:
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4",
             messages=[
                 {
                     "role": "system",
@@ -109,7 +115,7 @@ def extract_offer_parameters(prompt, api_key):
         st.error(f"Extraction error: {str(e)}")
         return None
 
-# Dynamic offer editor - NOW UPDATES SESSION STATE DIRECTLY
+# Dynamic offer editor
 def offer_editor():
     cols = st.columns(2)
     with cols[0]:
@@ -180,9 +186,9 @@ def display_offer(params):
     st.success("Offer updated successfully!")
 
 # Main workflow
-if st.button("Generate Offer") and final_prompt:
+if st.button("Generate Offer") and user_prompt:
     with st.spinner("Creating your offer..."):
-        st.session_state.offer_params = extract_offer_parameters(final_prompt, openai_api_key)
+        st.session_state.offer_params = extract_offer_parameters(user_prompt, openai_api_key)
         st.session_state.adjusted_params = st.session_state.offer_params.copy()
         st.session_state.offer_created = True
         st.rerun()
@@ -199,10 +205,10 @@ if st.session_state.offer_params:
 if st.session_state.offer_created and st.session_state.adjusted_params:
     st.success("✅ Adjust the offer below and see changes in real-time:")
     
-    # Edit form - NOW DIRECTLY MODIFIES SESSION STATE
+    # Edit form
     offer_editor()
     
-    # Display the CURRENTLY EDITED offer (not the original)
+    # Display the CURRENTLY EDITED offer
     display_offer(st.session_state.adjusted_params)
     
     if st.button("🔄 Refresh Preview"):
